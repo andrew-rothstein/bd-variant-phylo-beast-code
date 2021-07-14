@@ -1,2 +1,2 @@
 # bd-variant-phylo-beast-code
-Code for variant calling, phylogenetics, and example BEAST run for Bd
+Exampele Rmd code for variant calling, phylogenetics, and example BEAST run for Bd
