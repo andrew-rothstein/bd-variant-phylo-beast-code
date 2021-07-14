@@ -1,0 +1,479 @@
+---
+title: "bd_recreate_figures"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+Once you have a VCF you can read it in and make it a genlight object.  Follow that with making a PCA.  You will need meta data for each sample (sample name and population)
+
+```{r}
+library(tidyverse)
+library(vcfR)
+library(ggplot2)
+library(adegenet)
+library(poppr)
+library(ape)
+library(RColorBrewer)
+library(plotly)
+library(ggrepel)
+library(ggforce)
+library(sp)
+library(sf)
+library(USAboundaries)
+library(rnaturalearth)
+library(tmap)
+library(ggmap)
+library(ggpubr)
+```
+
+read in VCF and match to meta
+
+```{r}
+bd.VCF <- read.vcfR("freebayes/bd_sierra_panama_global_keep_new.vcf")
+
+bd.meta <- read_tsv(file = "meta/bd_sierra_panama_global_meta.tsv")
+
+# species.merge <- read_csv("meta/species_tomerge.csv")
+# 
+# bd.species.meta <- left_join(bd.meta, species.merge, by = "swab_id")
+# write_tsv(bd.species.meta, "Rothstein_etal_Sierra_Panama_GPL_meta.txt")
+
+colnames(bd.VCF@gt)[-1] -> vcf.names
+as.data.frame(vcf.names) -> vcf.names
+colnames(vcf.names) <- "swab_id"
+left_join(vcf.names, bd.meta, by = "swab_id") -> vcf.meta
+
+all(colnames(bd.VCF@gt)[-1] == vcf.meta$swab_id)
+
+site_id_summary <- vcf.meta %>% group_by(site_id, major) %>% summarise(n=n())
+
+
+```
+
+Figure2A. Make VCF object a genlight object.  Set populations.  Make PCA.
+
+```{r}
+gl.bd <- vcfR2genlight(bd.VCF)
+ploidy(gl.bd) <- 2
+pop(gl.bd) <- vcf.meta$major
+
+
+# all samples 
+pca <- glPca(gl.bd, nf = 3)
+barplot(100*pca$eig/sum(pca$eig), col = heat.colors(50), main="PCA Eigenvalues")
+title(ylab="Percent of variance\nexplained", line = 2)
+title(xlab="Eigenvalues", line = 1)
+
+pca.scores <- as.data.frame(pca$scores)
+pca.scores$pop <- pop(gl.bd)
+
+pca.scores.meta<- rownames_to_column(pca.scores, var = "swab_id")
+
+pca.scores.meta <- left_join(pca.scores.meta, vcf.meta, by = "swab_id")
+
+pca.scores.meta <- pca.scores.meta %>% select(-c(pop, locale))
+
+write_tsv(pca.scores.meta, "meta/pca.scores.vcf.tsv")
+
+cols3 <- c("#000000", "#E69F00", "#56B4E9")
+cols8 <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+
+
+cols <- brewer.pal(n = nPop(gl.bd), name = "Dark2")
+
+set.seed(9)
+p.major <- ggplot(pca.scores, aes(x=PC2, y=PC1, color = pop, label = rownames(pca.scores))) + 
+  geom_point(size=3) + 
+  xlab("PC2 (6.6%)") +
+  ylab("PC1 (21.4%)") +
+  scale_color_manual(labels = c(expression(paste("Global ", italic("Bd"), "GPL")),
+                     "Central Panama", 
+                     "Sierra Nevada"), values = c("#E69F00","#56B4E9", "#636363")) + 
+  # geom_mark_hull(aes(filter = pop == "Global")) +
+  # geom_mark_hull(aes(filter = pop == "Panama")) +
+  # geom_mark_hull(aes(filter = pop == "Sierra")) +
+  #stat_ellipse(level = 0.95, size = 1) +
+  geom_hline(yintercept = 0) + 
+  geom_vline(xintercept = 0) + 
+  #scale_y_reverse() +
+  theme_bw() +
+  theme(legend.position = c(0.1, 0.92), text = element_text(size=18), legend.title = element_blank(), legend.background = element_rect(fill = "transparent"), legend.text.align = 0, legend.key = element_rect(fill = "transparent"))
+
+ggplotly(p.major)
+
+```
+
+subset vcf by major region
+
+```{r}
+vcf.meta %>% filter(major == "Panama") -> vcf.panama.meta
+vcf.meta %>% filter(major == "Sierra") -> vcf.sierra.meta
+
+popsub(gl.bd, sublist = "Panama") -> gl.panama
+popsub(gl.bd, sublist = "Sierra") -> gl.sierra
+
+```
+
+Figure 1C Panama PCA
+
+```{r}
+library(ggsci)
+pop(gl.panama) <- vcf.panama.meta$site_id
+pca.panama <- glPca(gl.panama, nf = 3)
+barplot(100*pca.panama$eig/sum(pca.panama$eig), col = heat.colors(50), main="PCA Eigenvalues")
+title(ylab="Percent of variance\nexplained", line = 2)
+title(xlab="Eigenvalues", line = 1)
+
+pca.panama.scores <- as.data.frame(pca.panama$scores)
+pca.panama.scores$pop <- pop(gl.panama)
+#pca.panama.scores$pop2 <- vcf.panama.meta$jur
+
+cols_panama <- c('#42d4f4','#9A6324', '#4363d8', '#f58231', '#dcbeff', '#800000', '#ffe119', '#a9a9a9',  '#fabed4', '#696969')
+
+#cols_panama <- colorRampPalette(brewer.pal(8, "Dark2"))(10)
+#cols <- brewer.pal(n_distinct(pca.panama.scores$pop), "")
+
+set.seed(9)
+p.panama <- ggplot(pca.panama.scores, aes(x=PC2, y=PC1, col = pop)) + 
+  geom_point(size=2) + 
+  xlab("PC1 (6.0%)") + #31.0%
+  ylab("PC2 (4.8%)") +   #13.8%
+  #geom_mark_ellipse(aes(label = pop), tol = 0.05) +
+  stat_ellipse(level = 0.95, size = 1) + 
+  #scale_color_manual("black") +
+  #scale_color_grey(end = 0.5) +
+  scale_color_manual(values = cols_panama) + 
+  geom_hline(yintercept = 0) + 
+  geom_vline(xintercept = 0) + 
+  theme_bw() +
+  theme(legend.position = "none", text = element_text(size=12))
+  # theme(text = element_text(size=10), legend.title = element_text(size=10),
+  #         legend.text = element_text(size=10), 
+  #          legend.justification=c(0,1), 
+  #          legend.position=c(0.05, 0.95),
+  #          legend.background = element_blank(),
+  #          legend.key = element_blank())
+  
+```
+
+Figure 1B Sierra Nevada PCA
+```{r}
+pop(gl.sierra) <- vcf.sierra.meta$site_id
+pca.sierra <- glPca(gl.sierra, nf = 3)
+barplot(100*pca.sierra$eig/sum(pca.sierra$eig), col = heat.colors(50), main="PCA Eigenvalues")
+title(ylab="Percent of variance\nexplained", line = 2)
+title(xlab="Eigenvalues", line = 1)
+
+pca.sierra.scores <- as.data.frame(pca.sierra$scores)
+pca.sierra.scores$pop <- pop(gl.sierra)
+pca.sierra.scores$park <- vcf.sierra.meta$jursidiction
+
+#cols_sierra <- brewer.pal(n_distinct(pca.sierra.scores$pop), "Paired")
+
+cols_sierra <- c('#42d4f4','#9A6324', '#4363d8', '#f58231', '#dcbeff', '#800000', '#ffe119', '#a9a9a9',  '#fabed4', '#696969')
+
+p.sierra <- ggplot(pca.sierra.scores, aes(x=PC2, y=PC1, col = pop)) + 
+  geom_point(size=2) + 
+  #geom_mark_ellipse(aes(label = pop), tol = 0.05) +
+  xlab("PC2 (7.1%)") + #9.4
+  ylab("PC1 (20.6%)") +   #21.3
+  stat_ellipse(level = 0.95, size = 1) + 
+  scale_color_manual(values = cols_sierra) + 
+  geom_hline(yintercept = 0) + 
+  geom_vline(xintercept = 0) + 
+  theme_bw() +
+  theme(legend.position = "none", text = element_text(size = 12))
+
+cowplot::plot_grid(p.sierra, p.panama,  nrow = 1)
+```
+
+
+To make Sierra Nevada map if needed 
+```{r}
+
+# read_csv("/bd_pop_gen_combined/meta/bd_sierra_panama_only.csv") -> sierra_panama
+# read_sf("../seki_summer2017/seki_meta/nps_boundary/nps_boundary.shp") %>% st_transform(crs = 4326) -> nps
+# 
+# sierra <- sierra_panama %>% filter(major == "sierra")
+# panama <- sierra_panama %>% filter(major == "panama")
+# 
+# sierra_sf <- sierra %>% st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+# pana_sf  <- panama %>% st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+# 
+# as.factor(sierra$site_id) -> sierra$site_id
+# 
+# state_names <- c("california")
+# park_names <- c("Kings Canyon", "Sequoia", "Yosemite")
+# 
+# parks <- nps %>% filter(PARKNAME %in% park_names) %>% 
+#   mutate(lon=map_dbl(geometry, ~st_centroid(.x)[[1]]),
+#          lat=map_dbl(geometry, ~st_centroid(.x)[[2]]))
+# 
+# CA<-us_states(resolution = "high", states = state_names) %>%
+#   st_transform(crs = 4326)
+# 
+# cols_sierra <- brewer.pal(n = 10, name = "Paired")
+# 
+# sierra_base <- get_stamenmap(bbox = c(left = -119.5, bottom = 36.9, right = -118.3, top =38.2), zoom=11, maptype = 'terrain-labels')
+# 
+# sierra_map <- ggmap(sierra_base) +
+#     geom_point(data = sierra, aes(x = longitude, y = latitude, col = site_id),    
+#              position=position_jitter(h=0.015, w=0.015),
+#              shape = 20, alpha = 0.5, size = 3) +
+#   scale_color_manual(values = cols_sierra) +
+#   geom_sf(data=parks, color = "gray30", lwd=0.5, fill=NA) +
+#   geom_sf(data=CA, color = "gray30", lwd=0.5, fill=NA)
+#   
+#   
+# 
+# sf::write_sf(parks, "meta/parks.shp")
+# 
+# 
+# sierra_panama %>% filter(major == "panama") %>% ggplot() + 
+#   geom_point(aes(x = longitude, y = latitude, col = jursidiction), 
+#              position=position_jitter(h=0.015, w=0.015),
+#              shape = 20, alpha = 0.5, size = 3)
+# 
+
+```
+
+Figure S1 Similar sample size site diversity box plots
+
+```{r}
+data_path <- "/bd_pop_gen_combined/meta/diversity_bams/theta_pestPG"
+files <- dir(data_path, pattern = "*.pestPG")
+file_path <- dir(data_path, pattern = "*.pestPG", full.names = T)
+site <- stringr::str_split(files, pattern = "_all_out.thetas.idx.pestPG", simplify = T)
+site <- site[,1]
+
+
+theta_sites <- 
+  map2(file_path, site, ~read_tsv(.x) %>% mutate(site_id = .y)) %>%
+  reduce(rbind)
+
+threshold <- 191
+theta_sites_190 <- subset(theta_sites, theta_sites[,2] < threshold)
+
+theta_means_sites <- theta_sites_190 %>% 
+  group_by(site_id) %>% 
+    summarise(
+    mean_tw = mean(tW, na.rm = TRUE),
+    sd_tw = sd(tW, na.rm = TRUE),
+    mean_tP = mean(tP, na.rm = TRUE),
+    sd_tw = sd(tP, na.rm = TRUE)
+  )
+
+## altos_de_piedra & mono_pass
+
+res_wil_tw_alto_mono <- theta_sites_190 %>% 
+  select(tW, site_id) %>% 
+  filter(site_id %in% c("altos_de_piedra", "mono_pass")) %>% 
+  wilcox.test(tW ~ site_id, .)
+
+res_wil_tP_alto_mono <- theta_sites_190 %>% 
+  select(tP, site_id) %>% 
+  filter(site_id %in% c("altos_de_piedra", "mono_pass")) %>% 
+  wilcox.test(tP ~ site_id, .)
+
+## barrett_basin and cero negro
+
+res_wil_tw_barrrett_cero <- theta_sites_190 %>% 
+  select(tW, site_id) %>% 
+  filter(site_id %in% c("barrett_basin", "cerro_negro")) %>% 
+  wilcox.test(tW ~ site_id, .)
+
+res_wil_tP_barrrett_cero <- theta_sites_190 %>% 
+  select(tP, site_id) %>% 
+   filter(site_id %in% c("barrett_basin", "cerro_negro")) %>% 
+  wilcox.test(tP ~ site_id, .)
+
+## unicorn_ponds & el_cope
+
+res_wil_tw_unicorn_cope <- theta_sites_190 %>% 
+  select(tW, site_id) %>% 
+  filter(site_id %in% c("unicorn_ponds", "el_cope")) %>% 
+  wilcox.test(tW ~ site_id, .)
+
+res_wil_tP_unicorn_cope <- theta_sites_190 %>% 
+  select(tP, site_id) %>% 
+  filter(site_id %in% c("unicorn_ponds", "el_cope")) %>% 
+  wilcox.test(tP ~ site_id, .)
+
+
+summary(res_aov_tw_alto_mono)
+summary(res_aov_tP_alto_mono)
+
+
+melt_theta_sites_190 <- as.data.frame(theta_sites_190) %>% select(site_id, tW, tP) %>% 
+  reshape::melt(., id.vars = "site_id", measure.vars = c("tW", "tP"))
+
+site_id_table <- melt_theta_sites_190 %>% group_by(site_id) %>% summarise(n = n())
+
+write_tsv(site_id_table, "/bd_pop_gen_combined/meta/diversity_bams/site_id_title.tsv")
+site_id_table <- read_tsv("/bd_pop_gen_combined/meta/diversity_bams/site_id_title.tsv")
+
+melt_theta_sites_190_size <- left_join(melt_theta_sites_190, site_id_table, by = "site_id")
+
+
+write_tsv(melt_theta_sites_190, "/bd_pop_gen_combined/meta/diversity_bams/melt_thata_sites_190.tsv")
+
+melt_theta_sites_190_size$size <- factor(melt_theta_sites_190_size$size,levels = c("N=5", "N=9", "N=12", "N=21"))
+
+
+site_watter <- melt_theta_sites_190_size %>% filter(variable == "tW") %>% 
+  ggplot(., aes(size, value, group = site_id, fill = region)) +
+  #stat_compare_means() +
+  stat_compare_means(method = "anova", label.y = 4, label = "p.signif",  bracket.size = 0.2) +
+  geom_boxplot(width = 0.5) +
+  ylab(expression(paste("Watterson's ", theta))) +
+  theme_classic() +
+  theme(axis.title.x = element_blank()) +
+  theme(text = element_text(size=20)) +
+  scale_fill_manual(values = c("#56b4e8", "#636363")) +
+  theme(legend.position = "none")
+
+site_pi <- melt_theta_sites_190_size %>% filter(variable == "tP") %>% 
+  ggplot(., aes(size, value, group = site_id, fill = region)) +
+  stat_compare_means(method = "anova", label.y = 3.5, label = "p.signif",  bracket.size = 0.2) +
+  geom_boxplot(width = 0.5) +
+  ylab(expression(pi)) +
+  theme_classic() +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.text.x =  element_text(size=20),
+        axis.text.y = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        legend.text = element_text(size = 10),
+        #legend.title = element_blank(), 
+        legend.title.align = 0.5) +
+  scale_fill_manual(values = c("#56b4e8", "#636363"), name = "Region", labels = c("Central Panama", "Sierra Nevada"))
+
+melt_theta_sites_190_size_sig <- melt_theta_sites_190_size %>% 
+   unite(size_region, c("size", "region"))
+
+res_aov_tW_site <- melt_theta_sites_190_size_sig %>% filter(str_detect(variable, "tW")) %>% aov(data = ., value ~ size_region)
+tukey_w <- TukeyHSD(res_aov_tW_site)
+
+res_aov_tP_site <- melt_theta_sites_190_size_sige %>% filter(str_detect(variable, "tP")) %>% aov(data = ., value ~ size_region)
+tukey_p <- TukeyHSD(res_aov_tP_site)
+
+
+
+div_plot <- cowplot::plot_grid(site_watter, site_pi + theme(legend.position = "none"), labels =  "AUTO", align = "hv")
+
+legend <- get_legend(
+  # create some space to the left of the legend
+  site_pi + theme(legend.box.margin = margin(0, 0, 0, 8))
+)
+
+cowplot::plot_grid(div_plot, legend, rel_widths = c(3, .4))
+  
+#   
+# samples.9 <- melt_theta_sites_190_size %>% 
+#   filter(site_id %in% c("altos_de_piedra", "mono_pass")) %>% 
+#   ggplot(., aes(variable, value,  fill= site_id)) +
+#   stat_compare_means(method = "wilcox.test", label.y = 2.5) +
+#   geom_boxplot(width = 0.2) +
+#   scale_x_discrete(labels=c("tW" = expression(theta), "tP" = expression(pi))) +  
+#   theme_classic() +
+#   theme(axis.title.x = element_blank()) +
+#   theme(text = element_text(size=20)) + 
+#   theme(legend.position = "none") +
+#   scale_fill_manual(values = c("#e69d03", "#636363")) 
+# 
+# samples.12 <- melt_theta_sites_190 %>% 
+#   filter(site_id %in% c("barrett_basin", "cerro_negro", "conness_pond")) %>% 
+#   ggplot(., aes(variable, value,  fill= site_id)) +
+#   stat_compare_means(method = "wilcox.test") +
+#   geom_boxplot(width = 0.2) +
+#   scale_x_discrete(labels=c("tW" = expression(theta), "tP" = expression(pi))) + 
+#   theme_classic() +
+#   theme(axis.title.x = element_blank()) +
+#   theme(text = element_text(size=20)) +
+#   theme(legend.position = "none") +
+#   scale_fill_manual(values = c("#636363", "#e69d03", "#636363"))
+# 
+# sample.21 <- melt_theta_sites_190 %>% 
+#   filter(site_id %in% c("unicorn_ponds", "el_cope", "devils_crag_basin")) %>% 
+#   ggplot(., aes(variable, value,  fill= site_id)) +
+#   #stat_compare_means(method = "wilcox.test", label.y = 3.5) +
+#   geom_boxplot(width = 0.2) +
+#   scale_x_discrete(labels=c("tW" = expression(theta), "tP" = expression(pi))) + 
+#   theme_classic() +
+#   theme(axis.title.x = element_blank()) +
+#   theme(text = element_text(size=20)) +
+#   theme(legend.position = "none") +
+#   scale_fill_manual(values = c("#636363", "#e69d03", "#636363")) 
+# 
+# samples.5 <- melt_theta_sites_190 %>% 
+#   filter(site_id %in% c("leconte_divide", "el_valle_s")) %>% 
+#   ggplot(., aes(variable, value,  fill= site_id)) +
+#   stat_compare_means(method = "wilcox.test", label.y = 3.5) +
+#   geom_boxplot(width = 0.2) +
+#   scale_x_discrete(labels=c("tW" = expression(theta), "tP" = expression(pi))) + 
+#   theme_classic() +
+#   theme(axis.title.x = element_blank()) +
+#   theme(text = element_text(size=20)) +
+#   theme(legend.position = "none") +
+#   scale_fill_manual(values = c("#e69d03", "#636363")) 
+
+```
+
+Figure 2B,C. global, panama, and sierra nevada diversity comparisions 
+```{r}
+global_sierra_panama <- read_tsv("global_sierra_panama_div.txt")
+all_labels <- read_tsv("/bd_pop_gen_combined/div_ggplot_all_labels.txt")
+
+global_sierra_panama <- global_sierra_panama %>% select(tW_global_noiso, tP_global_noiso, tW_panama, tP_panama, tW_sierra, tP_sierra)
+melt_global_sierra_panama <- as.data.frame(global_sierra_panama) %>% 
+  reshape::melt(.)
+
+melt_global_sierra_panama_labels <- left_join(melt_global_sierra_panama, all_labels, by = "variable")
+melt_global_sierra_panama_labels$region <- factor(melt_global_sierra_panama_labels$region, levels = c("Global BdGPL", "Panama", "Sierra Nevada"))
+
+my_comparisons <- list( c("Sierra Nevada", "Panama"), c("Panama", "Global BdGPL"), c("Sierra Nevada", "Global BdGPL") )
+
+res_aov_tW <- melt_global_sierra_panama_labels %>% filter(str_detect(variable, "tW")) %>% aov(data = ., value ~ region)
+TukeyHSD(res_aov_tW)
+
+res_aov_tP <- melt_global_sierra_panama_labels %>% filter(str_detect(variable, "tP")) %>% aov(data = ., value ~ variable)
+TukeyHSD(res_aov_tP)
+
+
+w_plot <- melt_global_sierra_panama_labels %>% filter(str_detect(variable,"tW")) %>% 
+  ggplot(., aes(region, value, fill = region)) +
+  #stat_compare_means() +
+  stat_compare_means(comparisons = my_comparisons, paired = TRUE, hide.ns = TRUE, label = "p.signif") +
+  geom_boxplot(width = 0.9) +
+  ylab(expression(paste("Watterson's ", theta))) +
+  theme_classic() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  theme(text = element_text(size=18)) +
+  scale_fill_manual(values = c("#e69d03","#56b4e8", "#636363")) +
+  theme(legend.position = "none")
+
+p_plot <- melt_global_sierra_panama_labels %>% filter(str_detect(variable,"tP")) %>% 
+  ggplot(., aes(region, value, fill = region)) +
+  #stat_compare_means() +
+  stat_compare_means(comparisons = my_comparisons, paired = TRUE, hide.ns = TRUE, label = "p.signif") +
+  geom_boxplot(width = 0.9) +
+  ylab(expression(pi)) +
+  theme_classic() +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  theme(text = element_text(size=18)) +
+  scale_fill_manual(values = c("#e69d03","#56b4e8", "#636363")) +
+  theme(legend.position = "none")
+
+
+cow_div <- cowplot::plot_grid(w_plot, p_plot, nrow = 2, ncol = 1, labels = c("B", "C"), align = "hv")
+
+cowplot::plot_grid(p.major, cow_div, labels = c("A"), rel_widths = c(1, 0.6), align = "hv")
+
+
+```
+
+

@@ -1,0 +1,326 @@
+---
+title: "Bd Fluidigm tree fasta"
+output: github_document
+editor_options: 
+  chunk_output_type: console
+---
+
+This script is to analyze the data from Panama swabs run on Bd Fluidigm V2. 
+
+Let's load the libraries we will need
+
+```{r, include=FALSE}
+
+library(Biostrings)
+library(phangorn)
+library(stringr)
+library(tidyverse)
+library(seqinr)
+library(XVector)
+library(muscle)
+library(seqRFLP)
+require(knitr)
+
+# set directory to ambiguities sequences
+#setwd("ambiguities.split_sample/")
+
+```
+read meta data
+
+```{r}
+read_csv("../../meta/vcf.sierra.meta.csv") -> sierra_meta
+```
+
+First, we should replace the PANA primer names with AB primer names that go beyond 194. This function strips the AB from the original primers and codes the PANA primers as 195-243. It also removed all unmerged reads from the file. 
+
+```{r}
+
+files <- list.files(".")
+
+#read in the table that contains the primer lookup table - named Panama_primer_lookup_table.csv
+
+match_table1 <- read.csv(file.choose())
+
+
+#write a function to rename the primer in run2 consensus files
+
+rename_primers_pana <- function(run_v2_file, match_table1){
+  
+  file <- readDNAStringSet(run_v2_file)
+  
+  names <- sapply(names(file), function(x) unlist(strsplit(x, split=":"))[2])
+  names <- sapply(names , function(x) unlist(strsplit(x, split="merged"))[1])
+  names <- gsub('.{1}$', '', names)
+  
+  for (i in 1:length(names)){
+    match_num <- match(names[i],match_table1[,2])
+    if (i==1){
+    newnames <- match_table1[match_num,1]
+    } else {
+    newnames <- append(newnames, match_table1[match_num,1])
+    }
+  }
+  file <- file[which(!is.na(newnames))] 
+  newnames <- na.omit(newnames)
+  
+  names(file) <- newnames
+  
+  writeXStringSet(file, format="fasta",file=paste(run_v2_file,"_primerfix.fasta",sep='') )
+}
+
+#run the function for all the files
+
+for (i in 1:length(files)){
+  rename_primers_pana(files[i], match_table1)
+}
+
+
+```
+
+First, we need to remove all the sequences in the files that are either too long (>200bp) or too short (<90)
+min predicted sequences is 103bp and max is 162 so we will add a buffer to that number and trim
+
+
+```{r}
+files <- list.files(".")
+files_p <-grep("primerfix",files,value=TRUE)
+
+for (i in 1: length(files_p)){
+    seq <- readDNAStringSet(files_p[i])
+    keep <- which((width(seq)>90) & (width(seq)<201))
+    seq_trim <- seq[keep]
+    writeXStringSet(seq_trim, format="fasta",file=paste(files_p[i],"_trim.fasta",sep='') )
+}
+
+files <- list.files(".")
+
+files_trim <-grep("_trim",files,value=TRUE)
+
+```
+
+Now let's see how many sequences we have for each primer/sample
+
+
+```{r}
+#creates an empty table
+length_table <- tibble(sample = "", length=0, file_trim="")
+
+#creates an object with sample names
+samplenames <- sapply(files_trim, function(x)unlist(strsplit(x,split=".fasta_primerfix.fasta_trim"))[1])
+samplenames <- sapply(samplenames, function(x) unlist(strsplit(x, split="Sample."))[2])
+
+
+#fills in the table with the number of amplicons for each sample
+  for (i in 1: length(files_trim)){
+    seq <- readDNAStringSet(files_trim[i], format = "fasta")
+    length_table <- add_row(length_table, sample=samplenames[i], length=length(seq), file_trim=files_trim[i])
+  }
+
+
+#establish a fitler of your choosing
+files_90 <- filter(length_table, length>50)
+filenames_90 <- files_90$file_trim
+#130/130
+
+
+
+```
+
+Now that we have the samples selected, let's fill in a matrix m with the sequences. Each row is a sample and each column is a locus.
+
+```{r}
+
+m <-matrix(NA, nrow=nrow(files_90), ncol=243)
+colnames(m) <- seq(1,243)
+rownames(m) <- files_90$sample
+
+seq_matrix <- as_tibble(m)
+
+
+for (i in 1:length(filenames_90)){
+  
+  seq <- readDNAStringSet(filenames_90[i])
+  
+  for (j in 1:length(seq)){
+    
+    col_match <- as.numeric(names(seq))
+    m[i,col_match[j]] <- as.character(seq[j])
+     }
+}
+
+```
+
+Now we have a matrix m with samples as rows and primers as columns. First we can eliminate primers with no data. Let's get the average length of each sequence to determine which has no data. We can also find the min max and mean sequence length to identify potential bad sequences. 
+
+```{r}
+
+n_bases <- matrix(NA, nrow=ncol(m), ncol=7)
+n_bases[,1] <- colnames(m)
+  
+for (i in 1:ncol(m)){
+  n_bases[i,2] <- mean(nchar(m[,i]),na.rm=T)
+  n_bases[i,3] <- min(nchar(m[,i]),na.rm=T)
+  n_bases[i,4] <- max(nchar(m[,i]),na.rm=T)
+  n_bases[i,5] <- median(nchar(m[,i]),na.rm=T)
+  n_bases[i,6] <- max(nchar(m[,i]),na.rm=T) - min(nchar(m[,i]),na.rm=T)
+  n_bases[i,7] <- sum(is.na(m[,i]))
+}
+
+colnames(n_bases) <- c("amp","mean","min","max","median","diff","sum")
+
+minall <- as.numeric(n_bases[,3])
+maxall <- as.numeric(n_bases[,4])
+
+
+diffs <- maxall - minall
+
+#explore which amps have very differnt min and max lengths
+prob_amps <- which(diffs>10)
+# 152 173 198 200 218 221 225 230 231
+
+test231<- m[,231]
+plot(nchar(test231))
+which(nchar(test225)>160)
+
+## 152
+## RKS14668, RKS14683
+
+## 173 
+## RKS25409 
+
+## 198
+## RKS25352 
+
+## 200
+## 
+
+## 218
+## MTS16404
+
+## 221
+## CBS17005 MTS16402 RKS13332 RKS13333 RKS14683  RKS7851 
+
+## 225 
+
+## 230 
+
+## 231
+ 
+
+
+```
+
+Now let's explore the problem amps. Here I create a filter for which loci get included. 
+
+```{r}
+#more than 1/3 missing data
+#badamps <- union(which(as.numeric(n_bases[,7]) > 66), which(as.numeric(n_bases[,6]) > 5))
+
+badamps <- which(as.numeric(n_bases[,7]) > 121)
+
+#add in the amps that map to multiple loci in the genome (or any other ones you want to exclude specifically)
+badamps <- c(badamps, 200, 225, 230, 231)
+
+m_trim <- m[,-badamps]
+
+dim(m_trim)
+#130 x 231
+
+
+#now let's redo the stats
+n_bases_trim <- n_bases[-badamps,]
+
+for (i in 1:ncol(m_trim)){
+  n_bases_trim[i,2] <- mean(nchar(m_trim[,i]),na.rm=T)
+  n_bases_trim[i,3] <- min(nchar(m_trim[,i]),na.rm=T)
+  n_bases_trim[i,4] <- max(nchar(m_trim[,i]),na.rm=T)
+  n_bases_trim[i,5] <- median(nchar(m_trim[,i]),na.rm=T)
+  n_bases_trim[i,6] <- max(nchar(m[,i]),na.rm=T) - min(nchar(m[,i]),na.rm=T)
+  n_bases_trim[i,7] <- sum(is.na(m_trim[,i]))
+}
+
+
+#looks good
+
+#Now let's make another length table to see how many amplicons are in the final dataset
+
+#create an empty table to populate
+length_table_2 <- tibble(sample = "", length=0)
+
+for (i in 1: nrow(m_trim)){
+    length_table_2 <- add_row(length_table_2, sample=rownames(m_trim)[i], length=sum(!is.na(m_trim[i,])))
+  }
+
+write.csv(length_table_2, "./all_50cut_amps.csv")
+
+```
+
+For each sample with data, aligns all loci separately. This is done only for the gene tree approach.
+
+```{r}
+
+#aligns all seqs (removing those with NAs) and writes them out as a separate fasta
+for (i in 1:ncol(m_trim)){
+  
+  locus_list <- m_trim[!is.na(m_trim[,i]),i]
+  locus_seq <- DNAStringSet(locus_list)
+  locus_align <- muscle::muscle(locus_seq)
+  locus_align <- DNAStringSet(locus_align)
+  writeXStringSet(locus_align, paste(colnames(m_trim)[i], "_align.fasta", sep=""))
+  
+}
+```
+
+That was good for making the gene trees. Now if we want to use the concatenation method this is how we do it:
+
+Ok, now that we have a clean data matrix (m_trim) we can now fill in the rest of the entries with NNNs. We will use the max amplicon length for the number of times to repeat the Ns
+
+```{r}
+
+for (i in 1:ncol(m_trim)){
+  
+  length_seq <- n_bases_trim[i,4]
+  
+  for (j in 1:nrow(m_trim)){
+    
+    if (is.na(m_trim[j,i])){
+      m_trim[j,i] <- paste(replicate(length_seq, "N"), collapse = "")
+    }
+    
+  }}
+
+
+```
+
+align all loci separately and then concatenate each locus to form the alignemnt. 
+
+```{r}
+#makes a copy of m_trim to replace with aligned seqs
+m_trim_align <- m_trim
+
+#aligns all seqs and popualates new df with the aligned seq
+for (i in 1:ncol(m_trim)){
+  
+  locus_seq <- DNAStringSet(m_trim[,i])
+  locus_align <- muscle::muscle(locus_seq)
+  locus_align <- DNAStringSet(locus_align)
+  
+    for (j in 1:length(locus_align)){
+    
+    m_trim_align[j,i] <- as.character(locus_align[j])
+     }
+  }
+
+
+#concatenate
+cat_seqs_align <- matrix(NA, nrow=length(filenames_90), ncol=2)
+
+cat_seqs_align[,1] <- rownames(m)
+
+cat_seqs_align[,2] <- apply(m_trim_align, 1, paste, collapse="")
+
+cat_seqs_align_df <- as.data.frame(cat_seqs_align)
+
+df.fasta = dataframe2fas(cat_seqs_align_df, file="sierra_vcfsamples.fasta")
+```
+

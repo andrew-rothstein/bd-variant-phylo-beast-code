@@ -1,0 +1,175 @@
+---
+title: "variant_freebayes_bd"
+output: github_document
+author: Andy Rothstein
+---
+Check each chunk to see if preferred running in R or bash.  Files needed in directory:
+-flash2.extendeFrags.fastq.gz (with all samples)
+-reference fasta
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ShortRead)
+library(Biostrings)
+```
+
+Split FASTQ file into seperate sample FASTQ files
+```{r}
+# read in input files      
+fq <- readFastq("./flash2.extendedFrags.all.fastq.gz")
+nms <- as.character(id(fq))
+id <- sapply(strsplit(sapply(strsplit(nms,split=" "),"[[",2L),split=":"),"[[",4L)
+split_tt <- split(fq,id)
+dir.create("split_samples")
+procs = 2
+mclapply(names(split_tt), function(x){
+ writeFastq(split_tt[[x]],file.path(paste("split_samples/",sep="."),paste("Sample",x,"fastq.gz",sep=".")))
+}, mc.cores = procs)
+```
+
+With seperate fastqs index our reference and align/create bams for each sample against reference 
+
+```{r}
+## refernce from consensus of geneious 
+
+dir.create("align_all")
+dir.create("bams_all")
+fqFiles = list.files("./split_samples/")
+threads = 2
+i=1
+if(!("Bd_Fl_ref_amplicon_seqs_noprimer.bwt" %in% list.files())){
+  print("Indexing Reference for bwa")
+  system("bwa index Bd_Fl_ref_amplicon_seqs_noprimer.fasta")
+}
+if(!("Bd_Fl_ref_amplicon_seqs_noprimer.fasta.fai" %in% list.files())){
+  print("Indexing Reference for samtools")
+  system("samtools faidx Bd_Fl_ref_amplicon_seqs_noprimer.fasta")
+}
+for(i in 1:length(fqFiles)){
+  print(i)
+  fq = fqFiles[i]
+  fqBase = sub(".fastq.gz","",fq)
+  print(c(fqBase))
+  print("Aligning reads")
+  system(paste0("bwa mem -t ", threads," ./Bd_Fl_ref_amplicon_seqs_noprimer.fasta ./split_samples/",fq," > ./bams_all/",fqBase,".sam"))
+  print("Convert to Bam")
+  system(paste0("samtools view -bt ./Bd_Fl_ref_amplicon_seqs_noprimer.fasta.fai -o ./bams_all/", fqBase,".bam ./bams_all/",fqBase,".sam"))
+  print("Sorting reads")
+  system(paste0("samtools sort ./bams_all/",fqBase,".bam -o ./bams_all/",fqBase,".sort.bam"))
+  print("Clean up")
+  system(paste0("rm ./bams_all/*.sam")); 
+}
+```
+
+clean up anything in bams folder that doesn't end with sort.bam - BE CAREFUL !!!!!!
+
+```{bash}
+cd bams
+ls | grep -v sort.bam
+ls | grep -v sort.bam | xargs rm
+```
+
+add read groups...(likely have to be completed on cluster - I haven't downloaded bamaddrg locally)
+```{r}
+bamFiles = list.files("bams_all/")
+bamFiles = bamFiles[grep("sort.bam$",bamFiles,perl=T)]
+i=1
+dir.create("bamsRG_all")
+for(i in 1:length(bamFiles)){
+  print(i)
+  bam = bamFiles[i]
+  bamB = sub("Sample.","",bamFiles[i])
+  bamB = sub(".sort.bam","",bamB)
+  system(paste0("bamaddrg -b bams_all/",bam," -s ",bamB," > bamsRG_all/Sample.",bamB,".sortRG.bam"))
+}
+```
+
+
+```{bash}
+## index bams with samtools
+
+## bash script of samtool_index.sh
+
+##!/usr/bin/env bash
+#for i in *.bam;
+#do
+#	samtools index $i
+#done;
+
+cd bams > samtool_index.sh
+
+# OR if in a bamsRG (bams read group) folder 
+cd bamsRG > samtool_index.sh
+```
+
+Get active region list
+```{r}
+xx = readDNAStringSet("~/Desktop/LTREB_bd/raw_data/all_ltreb/vc_ltreb/ref_amp.fa")
+write.table(paste(names(xx),paste(1,width(xx),sep="-"),sep=":"),"ref_amp_activeRegions.txt",quote=F,row.names=F,col.names=F)
+write.table(paste(names(xx),paste(1,width(xx),sep=" "),sep=" "),
+            "ref_amp_activeRegions.bed",quote=F,row.names=F,col.names=F)
+```
+
+samtools depth -f bamlist.txt > bamlist_depth
+
+take into excel 
+
+```{r}
+read_tsv("bamlist_depth.txt") -> depth_table
+
+unique_chrom <- unique(depth_table$chrom)
+
+bed_table <- read_table(file="ref_amp_activeRegions.bed", col_names=F)
+
+for (i in 1:((ncol(depth_table))-2)){
+  individual <- names(depth_table[i+2])
+  depth_table_i <- cbind(depth_table[,1:2],depth_table[individual])
+  bed_ind <- tibble()
+    for (j in 1:length(unique_chrom)){
+      chrom_i <- unique_chrom[j]
+      avg_chrom <- mean(filter(depth_table_i, chrom==chrom_i)[,3])
+      if (avg_chrom >= 5){
+        bed_ind <- rbind(bed_ind,bed_table[j,])} else {
+        paste("filtering out amp ",chrom_i," for ",individual,sep="") }
+    }
+  write_tsv(bed_ind, path=paste(individual,"_cov_filter.bed",sep=""), col_names=FALSE)}
+```
+
+```{r}
+bamFiles = list.files("bams/")
+bamFiles = bamFiles[grep("sort.bam$",bamFiles,perl=T)]
+bedFiles = list.files("depth_bed/")
+bedFiles = bedFiles[grep("_cov_filter.bed$",bedFiles,perl = T)]
+
+i=1
+dir.create("depth_bams")
+for(i in 1:length(bamFiles)){
+  print(i)
+  bam = bamFiles[i]
+  bed = bedFiles[i]
+  system(paste0("samtools view -L depth_bed/",bed," -b bams/",bam," > depth_bams/",bam,".filtercov.bam"))
+}
+```
+
+
+wc -l *.bed > bed_depth.txt 
+
+from that identfiying bams to be into new bamlist.txt (>=5)
+
+then run freebayes and angsd on new bamlist.txt
+
+
+make dictionary and fix ambiguitiy reference (if need be)
+```{bash}
+## build dictionary with picard - done on cluster but can be done locally
+java -jar -jar /clusterfs/vector/home/groups/software/sl-7.x86_64/modules/picard/2.9.0/lib/picard.jar picard CreateSequenceDictionary R=Bd_Fl_ref_amplicon_seqs_noprimer.fasta O=Bd_Fl_ref_amplicon_seqs_noprimer.dict
+
+## remove ambiguities from reference and make random nucleotides 
+seqtk randbase CJB4_ref_targets.fa > CJB4_ref_targets_het.fa
+```
+
+Freebayes - beforehand make a list of bams as a text file to feed in each bam
+```{bash}
+freebayes -f Bd_Fl_ref_amplicon_seqs_noprimer.fasta  -L bamlist_depth_60_wglobal.txt -t ref_amp_activeRegions.bed -0 -X --haplotype-length 0 -kwVa --no-mnps --min-coverage 10 --no-complex --use-best-n-alleles 4 --min-alternate-count 5 --min-alternate-fraction 0.3 > freebayes/bd_sierra_panama_global.vcf
+```
+
